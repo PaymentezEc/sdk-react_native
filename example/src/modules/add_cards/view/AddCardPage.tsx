@@ -22,7 +22,7 @@ const AddCardPage = () => {
         >
           <PaymentGatewayForm
             showHolderName={true}
-            userInfo={{ email: 'test@example.com', id: '4' }}
+            userInfo={{ email: 'erick.guillen@nuvei.com', id: '4' }}
             onSuccess={(card) => {
               if(card.card.status === 'rejected'){
                 Alert.alert('Error', `Card ${card.card.status}`, [

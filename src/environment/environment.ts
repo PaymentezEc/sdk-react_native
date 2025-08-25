@@ -49,15 +49,16 @@ export default class Environment {
     this._appKey = appKey;
     this._serverCode = serverCode;
     this._serverKey = serverKey;
-
+    console.log('test mode', testMode)
     this.baseConfig = this._getConfig(
-      testMode ? Environment.dev : Environment.dev
+      testMode ? Environment.dev : Environment.prod
     );
 
     console.log(`Environment app code ${appCode}`);
   }
 
   private _getConfig(environment: string): ConfigBase {
+    console.log(environment)
     switch (environment) {
       case Environment.dev:
         return new TestEnv();

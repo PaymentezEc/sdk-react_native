@@ -16,7 +16,7 @@ export const PresentationPage = () => {
       NUVEI_ENV.APP_KEY,
       NUVEI_ENV.SERVER_CODE,
       NUVEI_ENV.SERVER_KEY,
-      true
+      false
     );
   });
   const navigation = useNavigation();
