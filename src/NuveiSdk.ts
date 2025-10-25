@@ -23,14 +23,20 @@ class NuveiSdk {
     appKey: string,
     serverCode: string,
     serverKey: string,
-    testMode: boolean
+    testMode: boolean,
+    termUrl: string,
+    clientId: string,
+    clientSecret: string
   ): void {
     Environment.getInstance().initConfig(
       appCode,
       appKey,
       serverCode,
       serverKey,
-      testMode
+      testMode,
+      termUrl,
+      clientId,
+      clientSecret
     );
     // this.environment?.initConfig(appCode, appKey, serverCode, serverKey, testMode);
     this.environment = Environment.getInstance();
@@ -46,7 +52,9 @@ class NuveiSdk {
     methodHttp: string,
     queryParams: {},
     body: any,
-    credentialServer: boolean = true
+    credentialServer: boolean = true,
+    isCres: boolean = false,
+    tokenCres?: string,
   ): InterceptorHttp {
     if (!this.isInitialized()) {
       throw {
@@ -65,6 +73,8 @@ class NuveiSdk {
       queryParams: queryParams,
       secretCode: credentialServer ? serverCode : appCode,
       secretKey: credentialServer ? serverKey : appKey,
+      tokenCres: tokenCres??'',
+      isCress: isCres
     });
   }
 }

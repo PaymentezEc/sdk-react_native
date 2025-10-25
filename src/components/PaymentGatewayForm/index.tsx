@@ -15,6 +15,10 @@ import type { ErrorModel } from '../../interfaces';
 import { addCard } from '../../services/cards/Add.card';
 import { verify } from '../../services/transactions/verify.transaction';
 import type { BrowserResponse } from '../../services/interfaces/generic.interface';
+import { confirmCres, createCresReference, cresGetData, loginCres } from '../../services/cres/cres.service';
+import Environment from '../../environment/environment';
+// import NuveiSdk from '../../NuveiSdk';
+// import Environment from '../../environment/environment';
 
 export interface PaymentGatewayFormProps {
   userInfo: UserInfoAdd;
@@ -69,6 +73,53 @@ const PaymentGatewayForm = ({
   //information
   const [cardAdded, setCardAdded] =  useState<AddCardResponse>();
 
+  // Variable global o de estado (para controlar si ya hay una petición activa)
+let isFetchingCres = false;
+let cresInterval: NodeJS.Timeout | null = null;
+let token :string;
+let referenceId: string;
+let transactionId: string
+
+async function startCresPolling(token: string, id: string) {
+  if (cresInterval) return; // evita crear múltiples intervalos
+
+  cresInterval = setInterval(async () => {
+    if (isFetchingCres) return; // evita solapamiento de peticiones
+    isFetchingCres = true;
+
+    try {
+      const response = await cresGetData(token, id);
+      console.log('🌤️ cresGetData response:', response);
+
+      if (response.data.cres) {
+        console.log('✅ Proceso 3DS completado correctamente:', response);
+        // detener el polling
+        stopCresPolling();
+        const saveDataResponse = await confirmCres(token, referenceId);
+        if(saveDataResponse){
+
+        
+        challengeValidationCress(response.data.cres);
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error en cresGetData:', err);
+      stopCresPolling();
+    } finally {
+      isFetchingCres = false;
+    }
+  }, 5000);
+}
+
+function stopCresPolling() {
+  if (cresInterval) {
+    clearInterval(cresInterval);
+    cresInterval = null;
+    isFetchingCres = false;
+  }
+}
+
+
 
   //CUSTOM HOOKS
   const handleCardNumber = (value: string) => {
@@ -99,6 +150,15 @@ const PaymentGatewayForm = ({
       const month = parseInt(monthStr!, 10);
       const year = 2000 + parseInt(yearStr!, 10);
 
+      const responseCress = await loginCres(Environment.getInstance().clientId,Environment.getInstance().clientSecret );
+      if(responseCress){
+        token = responseCress.access_token;
+        
+      const responseCresResponse = await createCresReference(token||'')
+      if(responseCresResponse){
+      
+        referenceId = responseCresResponse.id;
+      
       const browserInfo = await getBrowserInfo()
       const response = await addCard({
         user: userInfo,
@@ -112,13 +172,14 @@ const PaymentGatewayForm = ({
         },
         extra_params: {
           threeDS2_data: {
-            term_url: 'https://lantechco.ec/img/callback3DS.php',
+            term_url: `https://nuvei-cres-dev-bkh4atahdegxa8dk.eastus-01.azurewebsites.net/api/cres/save/${responseCresResponse.id}`,
             device_type: 'browser'
           },
           browser_info: browserInfo
         }
       });
       console.log(response)
+      transactionId = response.card.transaction_reference;
       setCardAdded(response);
       switch (response?.card.status) {
               case 'valid':
@@ -154,13 +215,16 @@ const PaymentGatewayForm = ({
             }
      
             
-      
+          }
+        }
     } catch (err: any) {
       onLoading?.(false);
       clearAllForms()
       setIsLoading(false)
       console.log(err)
       onError?.(err['error'])
+    }finally{
+      clearAllForms()
     }
   };
 
@@ -179,12 +243,15 @@ const PaymentGatewayForm = ({
   
 
   const verifyBy3dsProcess = async (browserResponse: BrowserResponse)=>{
+    
       if(browserResponse.challenge_request){
         setIsLoading(false);
         onLoading?.(false);
+        
         setChallengeHtml(browserResponse.challenge_request)
         // setChallengeHtml(`<!DOCTYPE html SYSTEM 'about:legacy-compat'><html class='no-js' lang='en'xmlns='http://www.w3.org/1999/xhtml'><head><meta http-equiv='Content-Type' content='text/html; charset=utf-8'/><meta charset='utf-8'/></head><body OnLoad='OnLoadEvent();'><form action='https://ccapi-stg.paymentez.com/v2/3ds/mockchallenge' method='POST' id='threeD' name='threeD'>message_id: <input type='area' id='message_id' name='message_id' value='AU-106430' />;creq: <input type='area' id='creq'name='creq' value='ewogICAiYWNzVHJhbnNJRCIgOiAiMjZjZGI3ZjAtOTE0My00M2I0LTlhM2YtYWUwZWE1MzUyMzhjIiwKICA' />; \"term_url: <input type='area' id='term_url' name='term_url' value='https://lantechco.ec/img/callback3DS.php' />;\n            <input type='submit' value='proceed to issuer'></form><script language='Javascript'>document.getElementById('threeD').submit(); </script></body></body></html>`)
         setValidateBy3ds(true);
+        startCresPolling(token, referenceId);
       }else{
         try {
           setTimeout(() => { }, 5000)
@@ -286,16 +353,19 @@ const PaymentGatewayForm = ({
         user: {
           id: userInfo.id
         }, transaction: {
-          id: cardAdded?.card.transaction_reference ?? ''
+          id: transactionId
         },
         value: crestValue,
         type: 'BY_CRES',
         more_info: moreInfoOtp
       });
+
       onVerifyOtp?.(response)
+      
       setIsLoading(false)
       onLoading?.(false);
     } catch (err:any) {
+      
       onLoading?.(false);
       setIsLoading(false)
       onError?.(err)
@@ -321,7 +391,7 @@ const PaymentGatewayForm = ({
       <ChallengeModal
         visible={validateBy3ds}
         onClose={() => {
-          challengeValidationCress('U3VjY2VzcyBBdXRoZW50aWNhdGlvbg==')
+          
         }}
         onSuccess={() => { }}
         challengeHtml={challengeHtml}

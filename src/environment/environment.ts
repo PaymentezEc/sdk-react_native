@@ -12,6 +12,9 @@ export default class Environment {
   private _appKey: string = '';
   private _serverCode: string = '';
   private _serverKey: string = '';
+  private _termUrl: string = '';
+  private _clientId: string ='';
+  private _clientSecret: string = '';
 
   public get serverCode(): string {
     return this._serverCode;
@@ -29,6 +32,18 @@ export default class Environment {
     return this._serverKey;
   }
 
+  public get termUrl(): string{
+    return this._termUrl;
+  }
+
+  public  get clientId(): string{
+    return this._clientId;
+  }
+
+  public get clientSecret(): string{
+    return this._clientSecret;
+  }
+
   public baseConfig?: ConfigBase;
 
   public static getInstance(): Environment {
@@ -43,17 +58,23 @@ export default class Environment {
     appKey: string,
     serverCode: string,
     serverKey: string,
-    testMode: boolean
+    testMode: boolean,
+    termUrl: string,
+    clientId: string,
+    clientSecret: string
   ): void {
     this._appCode = appCode;
     this._appKey = appKey;
     this._serverCode = serverCode;
     this._serverKey = serverKey;
+    this._termUrl = termUrl;
+    this._clientId = clientId;
+    this._clientSecret = clientSecret;
     console.log('test mode', testMode)
     this.baseConfig = this._getConfig(
       testMode ? Environment.dev : Environment.prod
     );
-
+    
     console.log(`Environment app code ${appCode}`);
   }
 

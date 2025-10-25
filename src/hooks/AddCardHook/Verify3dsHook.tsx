@@ -1,6 +1,7 @@
 
 import { Modal, View, Button } from "react-native";
 import { WebView, type WebViewNavigation } from "react-native-webview";
+// import InterceptorHttp from "../../http/interceptor";
 
 type ChallengeModalProps = {
   visible: boolean;
@@ -16,14 +17,12 @@ export default function ChallengeModal({
   // onSuccess,
 }: ChallengeModalProps) {
 
-  const handleNavigation = (event: WebViewNavigation) => {
+  const handleNavigation = async (event: WebViewNavigation) => {
 
-
+    
     if (event.url.includes("callback3DS.php")) {
       try {
-        // const query = event.url.split("?")[1];
-        // const params = new URLSearchParams(query);
-        // const response = Object.fromEntries(params.entries());
+       
         
         onClose();
         return false; // detener navegación
@@ -43,7 +42,7 @@ export default function ChallengeModal({
 
         <WebView
         
-        originWhitelist={["*"]}
+        // originWhitelist={["*"]}
         source={{ html: challengeHtml }}
         onNavigationStateChange={handleNavigation}
         

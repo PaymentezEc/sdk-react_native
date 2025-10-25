@@ -10,6 +10,8 @@ export interface interceptorHttp {
   secretCode: string;
   secretKey: string;
   body?: {};
+  tokenCres: string;
+  isCress: boolean
 }
 
 export default class InterceptorHttp {
@@ -18,7 +20,9 @@ export default class InterceptorHttp {
   queryParams?: {};
   secretCode: string = '';
   secretKey: string = '';
+  tokenCres: string = '';
   body?: {};
+  isCress : boolean = false;
   private client!: AxiosAdapter;
 
   constructor({
@@ -28,6 +32,8 @@ export default class InterceptorHttp {
     secretCode,
     secretKey,
     body,
+    tokenCres,
+    isCress,
   }: interceptorHttp) {
     this.endpoint = endpoint;
     this.methodHttp = methodHttp;
@@ -35,14 +41,21 @@ export default class InterceptorHttp {
     this.secretCode = secretCode;
     this.queryParams = queryParams;
     this.body = body;
+    this.tokenCres = tokenCres;
+    this.isCress = isCress;
   }
 
   public async init(): Promise<void> {
-    const token = await generateAuthToken(this.secretKey, this.secretCode);
+    const token = (this.isCress) ?  this.tokenCres : await generateAuthToken(this.secretKey, this.secretCode);
     console.log(token);
+    console.log(this.isCress);
+    const urlBase = this.isCress ? Environment.getInstance().baseConfig?.urlCresBase ||'':  Environment.getInstance().baseConfig?.urlBase || '';
     this.client = new AxiosAdapter({
-      baseUrl: Environment.getInstance().baseConfig?.urlBase || '',
-      headers: {
+      baseUrl:urlBase,
+      headers:(this.isCress)? {
+        "Authorization" : `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      }:{
         'Auth-Token': token,
         'Content-Type': 'application/json',
       },
