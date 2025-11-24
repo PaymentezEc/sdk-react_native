@@ -1,24 +1,42 @@
-import {  useState } from 'react';
-import { View, ScrollView, KeyboardAvoidingView, Platform, Pressable, Text, StyleSheet, Button, Dimensions } from 'react-native';
+import { useCallback, useRef, useState } from 'react';
+import {
+  View,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  Text,
+  StyleSheet,
+  Dimensions
+} from 'react-native';
 import type { CardInfo } from './interfaces';
 import { formatCardNumber, formatExpiry, getCardInfo, getBrowserInfo } from './helpers';
 import AnimatedCardFlip from '../FlipCard';
 import ShadowInput from '../shadowInput';
-import { type AddCardResponse, type UserInfoAdd } from '../../services/interfaces/addCard.interface';
+import type { UserInfoAdd } from '../../services/interfaces/addCard.interface';
 
-import { validateCardNumber, validateHolderName, validateExpiryDate, validateSecurityCode, validateOTPCode } from './validations';
+import {
+  validateCardNumber,
+  validateHolderName,
+  validateExpiryDate,
+  validateSecurityCode,
+  validateOTPCode
+} from './validations';
 import { t } from '../../i18n';
-import type {  OtpResponse } from '../../services/interfaces/otp.interface';
+import type { OtpResponse } from '../../services/interfaces/otp.interface';
 import ChallengeModal from '../../hooks/AddCardHook/Verify3dsHook';
 
 import type { ErrorModel } from '../../interfaces';
 import { addCard } from '../../services/cards/Add.card';
 import { verify } from '../../services/transactions/verify.transaction';
 import type { BrowserResponse } from '../../services/interfaces/generic.interface';
-import { confirmCres, createCresReference, cresGetData, loginCres } from '../../services/cres/cres.service';
+import {
+  confirmCres,
+  createCresReference,
+  cresGetData,
+  loginCres
+} from '../../services/cres/cres.service';
 import Environment from '../../environment/environment';
-// import NuveiSdk from '../../NuveiSdk';
-// import Environment from '../../environment/environment';
 
 export interface PaymentGatewayFormProps {
   userInfo: UserInfoAdd;
@@ -30,12 +48,14 @@ export interface PaymentGatewayFormProps {
     inputTextColor?: string;
     errorColor?: string;
   };
-  onSuccess?: (response: AddCardResponse) => void;
+  onSuccess?: (succes: boolean, message: string) => void;
   onVerifyOtp?: (response: OtpResponse) => void;
   onError?: (response: ErrorModel) => void;
   onLoading?: (isLoading: boolean) => void;
-  moreInfoOtp?: boolean
+  moreInfoOtp?: boolean;
 }
+
+const POLL_INTERVAL_MS = 5000;
 
 const PaymentGatewayForm = ({
   userInfo,
@@ -43,123 +63,265 @@ const PaymentGatewayForm = ({
   theme = {},
   onSuccess,
   onError,
-  onLoading,
   onVerifyOtp,
+  onLoading,
   moreInfoOtp = true
 }: PaymentGatewayFormProps) => {
-
-  //FORM INPUTS INFORMATION
+  // FORM INPUTS
   const [cardNumber, setCardNumber] = useState('');
   const [cardholderName, setCardholderName] = useState('');
   const [dateExpiry, setDateExpiry] = useState('');
   const [securityCode, setSecurityCode] = useState('');
-  const [otpCode, setOtpCode] = useState("");
+  const [otpCode, setOtpCode] = useState('');
 
-  //ANIMATIONS FLIP CARD
+  // UI / small states
   const [isFlipped, setIsFlipped] = useState(false);
-
-  //PROCESS INFOMATION
-  const [cardInfo, setCardInfo] = useState<CardInfo>();
-  const [challengeHtml, setChallengeHtml] = useState<string>("");
+  const [cardInfo, setCardInfo] = useState<CardInfo | undefined>();
+  const [challengeHtml, setChallengeHtml] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [verifyByOtp, setVerifyByOtp] = useState(false);
+  const [isOtpValid, setIsOtpValid] = useState(true);
+  const [validateBy3ds, setValidateBy3ds] = useState(false);
 
-  //VALIDATIONS:
-  const [verifyByOtp, setVerifyByOtp] = useState<boolean>(false);
-  const [isOtpValid, setIsOtpValid] = useState<boolean>(true);
-  const [validateBy3ds, setValidateBy3ds] = useState<boolean>(false);
-  // const [validOtp, setValidOtp] = useState<boolean>(true);
-  // const [validate3ds, setValidate3ds] = useState<boolean>(false);
+  // Mutable refs to avoid race conditions
+  const tokenRef = useRef<string | null>(null);
+  const cresReferenceRef = useRef<string | null>(null);
+  const transactionRefRef = useRef<string | null>(null);
 
-  //information
-  const [cardAdded, setCardAdded] =  useState<AddCardResponse>();
+  // Polling refs
+  const isFetchingCresRef = useRef(false);
+  const cresIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Variable global o de estado (para controlar si ya hay una petición activa)
-let isFetchingCres = false;
-let cresInterval: NodeJS.Timeout | null = null;
-let token :string;
-let referenceId: string;
-let transactionId: string
-
-async function startCresPolling(token: string, id: string) {
-  if (cresInterval) return; // evita crear múltiples intervalos
-
-  cresInterval = setInterval(async () => {
-    if (isFetchingCres) return; // evita solapamiento de peticiones
-    isFetchingCres = true;
-
-    try {
-      const response = await cresGetData(token, id);
-      console.log('🌤️ cresGetData response:', response);
-
-      if (response.data.cres) {
-        console.log('✅ Proceso 3DS completado correctamente:', response);
-        // detener el polling
-        stopCresPolling();
-        const saveDataResponse = await confirmCres(token, referenceId);
-        if(saveDataResponse){
-
-        
-        challengeValidationCress(response.data.cres);
-        }
-      }
-    } catch (err) {
-      console.error('❌ Error en cresGetData:', err);
-      stopCresPolling();
-    } finally {
-      isFetchingCres = false;
-    }
-  }, 5000);
-}
-
-function stopCresPolling() {
-  if (cresInterval) {
-    clearInterval(cresInterval);
-    cresInterval = null;
-    isFetchingCres = false;
-  }
-}
-
-
-
-  //CUSTOM HOOKS
-  const handleCardNumber = (value: string) => {
+  // ------------ Helpers / small hooks ------------
+  const handleCardNumber = useCallback((value: string) => {
     const result = formatCardNumber(value);
     setCardNumber(result);
     setCardInfo(getCardInfo(result));
-  };
+  }, []);
 
-
-
-  const handleExpiryChange = (value: string) =>
+  const handleExpiryChange = useCallback((value: string) => {
     setDateExpiry(formatExpiry(value));
+  }, []);
 
-  const isFormValid =
+  const isCardFormValid =
     !validateCardNumber(cardNumber) &&
     !validateHolderName(cardholderName, showHolderName) &&
     !validateExpiryDate(dateExpiry) &&
-    !validateSecurityCode(securityCode, cardInfo?.cvcNumber) &&
-    !(verifyByOtp && validateOTPCode(otpCode));
+    !validateSecurityCode(securityCode, cardInfo?.cvcNumber);
 
-  const handleAddCardPress = async () => {
+  const isOtpFormValid = verifyByOtp ? !validateOTPCode(otpCode) : true;
+  const isFormValid = verifyByOtp ? isOtpFormValid : isCardFormValid;
+
+  // ------------- CRES Polling (uses refs) --------------
+  const startCresPolling = useCallback((token: string, id: string, onFound: (cres: string) => void) => {
+    if (cresIntervalRef.current) return;
+    cresIntervalRef.current = setInterval(async () => {
+      if (isFetchingCresRef.current) return;
+      isFetchingCresRef.current = true;
+      try {
+        const res = await cresGetData(token, id);
+        if (res?.data?.cres) {
+          stopCresPolling();
+          // confirmCres before using value (as your original flow)
+          const saved = await confirmCres(token, id);
+          if (saved) {
+            onFound(res.data.cres);
+          } else {
+            // fallback: still call onFound if needed
+            onFound(res.data.cres);
+          }
+        }
+      } catch (err) {
+        stopCresPolling();
+      } finally {
+        isFetchingCresRef.current = false;
+      }
+    }, POLL_INTERVAL_MS);
+  }, []);
+
+  const stopCresPolling = useCallback(() => {
+    if (cresIntervalRef.current) {
+      clearInterval(cresIntervalRef.current);
+      cresIntervalRef.current = null;
+    }
+    isFetchingCresRef.current = false;
+  }, []);
+
+  // -------------- Flow functions ----------------
+  const clearAllForms = useCallback(() => {
+    setCardNumber('');
+    setCardholderName('');
+    setDateExpiry('');
+    setSecurityCode('');
+    setOtpCode('');
+    setIsOtpValid(true);
+    setVerifyByOtp(false);
+    setCardInfo(undefined);
+  }, []);
+
+  const verifyBy3dsProcess = useCallback(
+    async (browserResponse: BrowserResponse | undefined, trxRef: string) => {
+      if (!trxRef) {
+        onError?.({
+          error: { type: 'Missing transaction', help: '', description: 'transactionRef is required for 3DS' }
+        });
+        return;
+      }
+
+      try {
+        if (browserResponse?.challenge_request) {
+          setIsLoading(false);
+          onLoading?.(false);
+          setChallengeHtml(browserResponse.challenge_request);
+          setValidateBy3ds(true);
+          if (tokenRef.current && cresReferenceRef.current) {
+            startCresPolling(tokenRef.current, cresReferenceRef.current, (cresValue) => {
+            
+              challengeValidationCres(cresValue, trxRef);
+            });
+          } else {
+            onError?.({
+              error: { type: '3DS', help: '', description: 'CRES token/ref not available' }
+            });
+          }
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 5000));
+        const response = await verify({
+          user: { id: userInfo.id },
+          transaction: { id: trxRef },
+          value: '',
+          type: 'AUTHENTICATION_CONTINUE',
+          more_info: moreInfoOtp
+        });
+        
+        switch (response.transaction?.status) {
+          case 'success':
+            onVerifyOtp?.(response);
+            setIsLoading(false);
+            onLoading?.(false);
+            clearAllForms();
+            break;
+          case 'pending':
+            
+            verifyBy3dsProcess(response['3ds']?.browser_response, trxRef);
+            break;
+          case 'failure':
+            onVerifyOtp?.(response);
+            setIsLoading(false);
+            onLoading?.(false);
+            break;
+          default:
+            onError?.({
+              error: { type: '3DS', help: '', description: 'Unexpected status' }
+            });
+            setIsLoading(false);
+            onLoading?.(false);
+            break;
+        }
+      } catch (err: any) {
+        onLoading?.(false);
+        setIsLoading(false);
+        onError?.(err?.error ?? { error: { type: '3DS', help: '', description: String(err) } });
+      } finally {
+        
+      }
+    },
+    [clearAllForms, moreInfoOtp, onError, onLoading, onVerifyOtp, startCresPolling, userInfo.id]
+  );
+
+  const challengeValidationCres = useCallback(
+    async (cresValue: string, trxRef: string) => {
+      try {
+        setValidateBy3ds(false);
+        setIsLoading(true);
+        onLoading?.(true);
+        const response = await verify({
+          user: { id: userInfo.id },
+          transaction: { id: trxRef },
+          value: cresValue,
+          type: 'BY_CRES',
+          more_info: moreInfoOtp
+        });
+        onVerifyOtp?.(response);
+        setIsLoading(false);
+        onLoading?.(false);
+        clearAllForms();
+      } catch (err: any) {
+        setIsLoading(false);
+        onLoading?.(false);
+        onError?.(err);
+      } finally {
+        stopCresPolling();
+      }
+    },
+    [clearAllForms, moreInfoOtp, onError, onLoading, onVerifyOtp, stopCresPolling, userInfo.id]
+  );
+
+  const handleVerifyOtp = useCallback(async () => {
+    if (!transactionRefRef.current) {
+      onError?.({ error: { type: 'Missing transaction', help: '', description: 'transactionRef missing' } });
+      return;
+    }
+    try {
+      setIsLoading(true);
+      onLoading?.(true);
+      const response = await verify({
+        user: { id: userInfo.id },
+        transaction: { id: transactionRefRef.current },
+        value: otpCode,
+        type: 'BY_OTP',
+        more_info: moreInfoOtp
+      });
+      switch (response.transaction?.status_detail) {
+        case 31:
+          setOtpCode('');
+          setIsOtpValid(false);
+          break;
+        case 32:
+          setIsOtpValid(true);
+          onVerifyOtp?.(response);
+          clearAllForms();
+          break;
+        case 33:
+          clearAllForms();
+          onVerifyOtp?.(response);
+          break;
+        default:
+          setOtpCode('');
+          setIsOtpValid(false);
+          break;
+      }
+    } catch (err: any) {
+      onError?.(err);
+    } finally {
+      setIsLoading(false);
+      onLoading?.(false);
+    }
+  }, [clearAllForms, moreInfoOtp, onError, onLoading, onVerifyOtp, otpCode, userInfo.id]);
+
+  // ------------- Main add card flow -------------
+  const handleAddCard = useCallback(async () => {
     if (!isFormValid) return;
     onLoading?.(true);
-    setIsLoading(true)
+    setIsLoading(true);
 
     try {
       const [monthStr, yearStr] = dateExpiry.split('/');
       const month = parseInt(monthStr!, 10);
       const year = 2000 + parseInt(yearStr!, 10);
 
-      const responseCress = await loginCres(Environment.getInstance().clientId,Environment.getInstance().clientSecret );
-      if(responseCress){
-        token = responseCress.access_token;
-        
-      const responseCresResponse = await createCresReference(token||'')
-      if(responseCresResponse){
-      
-        referenceId = responseCresResponse.id;
-      
-      const browserInfo = await getBrowserInfo()
+      // Login CRES and create reference if needed
+      const respLogin = await loginCres(Environment.getInstance().clientId, Environment.getInstance().clientSecret);
+      if (respLogin) {
+        tokenRef.current = respLogin.access_token;
+        const respCresRef = await createCresReference(tokenRef.current);
+        if (respCresRef) {
+          cresReferenceRef.current = respCresRef.id;
+        }
+      }
+
+      const browserInfo = await getBrowserInfo();
       const response = await addCard({
         user: userInfo,
         card: {
@@ -168,239 +330,102 @@ function stopCresPolling() {
           expiry_month: month,
           expiry_year: year,
           cvc: securityCode,
-          type: cardInfo?.typeCode,
+          type: cardInfo?.typeCode
         },
         extra_params: {
           threeDS2_data: {
-            term_url: `https://nuvei-cres-dev-bkh4atahdegxa8dk.eastus-01.azurewebsites.net/api/cres/save/${responseCresResponse.id}`,
+            term_url: `https://nuvei-cres-dev-bkh4atahdegxa8dk.eastus-01.azurewebsites.net/api/cres/save/${cresReferenceRef.current ?? ''}`,
             device_type: 'browser'
           },
           browser_info: browserInfo
         }
       });
-      console.log(response)
-      transactionId = response.card.transaction_reference;
-      setCardAdded(response);
-      switch (response?.card.status) {
-              case 'valid':
-                onLoading?.(false);
-                setIsLoading(false)
-                onSuccess?.(response)
-                clearAllForms()
-                
-                break;
-              case 'pending':
-                setVerifyByOtp(true);
-                onLoading?.(false);
-                setIsLoading(false)
-                break;
-              case 'review':
-                verifyBy3dsProcess(response['3ds'].browser_response)
-                break;
-              case 'rejected':
-                clearAllForms()
-                onLoading?.(false);
-                setIsLoading(false)
-                onSuccess?.(response)
-                break;
-              default:
-                onError?.({error: {
-                  type:'Error in request',
-                  help:'',
-                  description:'Error in request'
-                }})
-                onLoading?.(false);
-                setIsLoading(false)
-                break;
-            }
-     
-            
-          }
-        }
-    } catch (err: any) {
-      onLoading?.(false);
-      clearAllForms()
-      setIsLoading(false)
-      console.log(err)
-      onError?.(err['error'])
-    }finally{
-      clearAllForms()
-    }
-  };
 
-  const clearAllForms = () => {
-    setCardNumber("")
-    setCardholderName("")
-    setDateExpiry("")
-    setSecurityCode("")
-    setOtpCode("")
-    setIsOtpValid(true)
-    setVerifyByOtp(false)
-    setCardInfo(undefined)
-  }
+      // Always take transaction ref from response.card.transaction_reference
+      const trxRef = response?.card?.transaction_reference;
+      if (trxRef) {
+        transactionRefRef.current = trxRef;
+      }
 
-
-  
-
-  const verifyBy3dsProcess = async (browserResponse: BrowserResponse)=>{
-    
-      if(browserResponse.challenge_request){
-        setIsLoading(false);
-        onLoading?.(false);
-        
-        setChallengeHtml(browserResponse.challenge_request)
-        // setChallengeHtml(`<!DOCTYPE html SYSTEM 'about:legacy-compat'><html class='no-js' lang='en'xmlns='http://www.w3.org/1999/xhtml'><head><meta http-equiv='Content-Type' content='text/html; charset=utf-8'/><meta charset='utf-8'/></head><body OnLoad='OnLoadEvent();'><form action='https://ccapi-stg.paymentez.com/v2/3ds/mockchallenge' method='POST' id='threeD' name='threeD'>message_id: <input type='area' id='message_id' name='message_id' value='AU-106430' />;creq: <input type='area' id='creq'name='creq' value='ewogICAiYWNzVHJhbnNJRCIgOiAiMjZjZGI3ZjAtOTE0My00M2I0LTlhM2YtYWUwZWE1MzUyMzhjIiwKICA' />; \"term_url: <input type='area' id='term_url' name='term_url' value='https://lantechco.ec/img/callback3DS.php' />;\n            <input type='submit' value='proceed to issuer'></form><script language='Javascript'>document.getElementById('threeD').submit(); </script></body></body></html>`)
-        setValidateBy3ds(true);
-        startCresPolling(token, referenceId);
-      }else{
-        try {
-          setTimeout(() => { }, 5000)
-          const response = await verify({
-            user: {
-              id: userInfo.id
-            }, transaction: {
-              id: cardAdded?.card.transaction_reference ?? ''
-            },
-            value: '',
-            type: 'AUTHENTICATION_CONTINUE',
-            more_info: moreInfoOtp
-          })
-
-          switch (response.transaction?.status) {
-                    case 'success':
-                      onVerifyOtp?.(response)
-                      setIsLoading(false);
-                      onLoading?.(false);
-                      break;
-                    case 'pending':
-                      verifyBy3dsProcess(response['3ds']!.browser_response)
-                      break;
-                    case 'failure':
-                      onVerifyOtp?.(response)
-                      setIsLoading(false);
-                      onLoading?.(false);
-                      break;
-                    default:
-                    onError?.({error:{
-                      type:'Error in request',
-                      help:'',
-                      description:'Error in request'
-                    }})
-                    onLoading?.(false);
-                    setIsLoading(false)
-                    break;
-                  }
-        } catch (err: any) {
+      // Handle different status_detail
+      switch (response?.transaction?.status_detail) {
+        case 7:
           onLoading?.(false);
-          setIsLoading(false)
-          onError?.(err['error'])
-        }
-        
+          setIsLoading(false);
+          if (response.card.status === 'valid') {
+            onSuccess?.(true, 'Card Added Successfully');
+          } else {
+            onSuccess?.(false, `Card Status: ${response.card.status}`);
+          }
+          clearAllForms();
+          break;
 
+        case 9:
+          onLoading?.(false);
+          setIsLoading(false);
+          onSuccess?.(false, `Card Status: ${response.card.status}`);
+          break;
 
+        case 31:
+          // OTP required
+          setVerifyByOtp(true);
+          // ensure transactionRefRef is set (we passed it above)
+          onLoading?.(false);
+          setIsLoading(false);
+          break;
+
+        case 36:
+        case 35:
+          // 3DS flow: pass trxRef directly to avoid setState race
+          await verifyBy3dsProcess(response['3ds']?.browser_response, trxRef ?? '');
+          break;
+
+        default:
+          onError?.({
+            error: { type: 'Error in request', help: '', description: 'Error in request' }
+          });
+          onLoading?.(false);
+          setIsLoading(false);
+          break;
       }
-  }
-
-
-
-  const handleVerifyOtp = async () =>{
-      try {
-        setIsLoading(true)
-        onLoading?.(true);
-        const response = await verify({
-                user: {
-                  id: userInfo.id
-                }, transaction: {
-                  id: cardAdded?.card.transaction_reference ?? ''
-                },
-                value: otpCode,
-                type: 'BY_OTP',
-                more_info: moreInfoOtp
-              });
-              switch (response.transaction?.status_detail) {
-                        case 31:
-                          setOtpCode("")
-                          setIsOtpValid(false)
-                          break;
-                        case 32:
-                          setIsOtpValid(true)
-                          onVerifyOtp?.(response)
-                          break;
-                        case 33:
-                          clearAllForms()
-                          onVerifyOtp?.(response)
-                          break;
-                        default:
-                          setOtpCode("")
-                          setIsOtpValid(false)
-                          break;
-                      }
-      } catch (err:any) {
-        onError?.(err)
-      }finally{
-        setIsLoading(false);
-        onLoading?.(false);
-      }
-  }
-
-
-  const  challengeValidationCress = async(crestValue: string )=>{
-    try {
-      setValidateBy3ds(false)
-      setIsLoading(true)
-      onLoading?.(true);
-      const response = await verify({
-        user: {
-          id: userInfo.id
-        }, transaction: {
-          id: transactionId
-        },
-        value: crestValue,
-        type: 'BY_CRES',
-        more_info: moreInfoOtp
-      });
-
-      onVerifyOtp?.(response)
-      
-      setIsLoading(false)
+    } catch (err) {
       onLoading?.(false);
-    } catch (err:any) {
-      
-      onLoading?.(false);
-      setIsLoading(false)
-      onError?.(err)
+      setIsLoading(false);
+      console.log("Error")
+      onError?.(err as ErrorModel ?? { error: { type: 'network', help: '', description: String(err) } });
+    } finally {
+      // don't clear all forms here, because OTP / 3DS flows need data to remain.
+      // clearAllForms() should be called only on success/terminal conditions
     }
+  }, [
+    cardNumber,
+    cardInfo?.typeCode,
+    cardholderName,
+    clearAllForms,
+    isFormValid,
+    securityCode,
+    userInfo,
+    verifyBy3dsProcess,
+    onError,
+    onLoading,
+    onSuccess
+  ]);
 
-  }
-
-  const handlePressButton = ()=>{
-    if(verifyByOtp){
-       handleVerifyOtp()
-    }else{
-      handleAddCardPress()
+  // -------------- Button handler (decide which flow) -------------
+  const handlePress = useCallback(() => {
+    if (!isFormValid || isLoading) return;
+    if (verifyByOtp) {
+      void handleVerifyOtp();
+    } else {
+      void handleAddCard();
     }
-  }
+  }, [handleAddCard, handleVerifyOtp, isFormValid, isLoading, verifyByOtp]);
 
+  // -------------- Render -------------
   return (
-
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={{ flex: 1 }}
-    >
-
-      <ChallengeModal
-        visible={validateBy3ds}
-        onClose={() => {
-          
-        }}
-        onSuccess={() => { }}
-        challengeHtml={challengeHtml}
-      />
-      <ScrollView
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ padding: 16 }}
-      >
-        {/* Tarjeta ilustrativa */}
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+      <ChallengeModal visible={validateBy3ds} onClose={() => {}} onSuccess={() => {}} challengeHtml={challengeHtml} />
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 16 }}>
         <AnimatedCardFlip
           isFlipped={isFlipped}
           cardNumber={cardNumber || '**** **** **** ****'}
@@ -414,7 +439,6 @@ function stopCresPolling() {
           }
         />
 
-        {/* Inputs */}
         <ShadowInput
           label={t('forms.cardNumber')}
           placeholder="0000 0000 0000 0000"
@@ -422,7 +446,7 @@ function stopCresPolling() {
           onChangeText={handleCardNumber}
           maxLength={19}
           editable={!verifyByOtp}
-          keyboardType='numeric'
+          keyboardType="numeric"
           allowedChars={/^[0-9 ]*$/}
           setIsFlipped={setIsFlipped}
           isFlipped={false}
@@ -436,7 +460,7 @@ function stopCresPolling() {
           <ShadowInput
             label={t('forms.holderName')}
             placeholder="John Doe"
-            forceUppercase={true}
+            forceUppercase
             value={cardholderName}
             editable={!verifyByOtp}
             onChangeText={setCardholderName}
@@ -451,7 +475,6 @@ function stopCresPolling() {
           />
         )}
 
-        {/* Expiry y CVV */}
         <View style={styles.row}>
           <View style={{ flex: 1, marginRight: 8 }}>
             <ShadowInput
@@ -470,6 +493,7 @@ function stopCresPolling() {
               errorStyle={{ color: theme.errorColor || 'red' }}
             />
           </View>
+
           <View style={{ flex: 1 }}>
             <ShadowInput
               label={t('forms.securityCode')}
@@ -481,13 +505,14 @@ function stopCresPolling() {
               keyboardType="numeric"
               validation={(v) => validateSecurityCode(v, cardInfo?.cvcNumber)}
               setIsFlipped={setIsFlipped}
-              isFlipped={true}
+              isFlipped
               labelStyle={{ color: theme.labelColor || '#000' }}
               inputStyle={{ color: theme.inputTextColor || '#000' }}
               errorStyle={{ color: theme.errorColor || 'red' }}
             />
           </View>
         </View>
+
         {verifyByOtp && (
           <ShadowInput
             label={t('forms.otpCode')}
@@ -496,7 +521,6 @@ function stopCresPolling() {
             onChangeText={setOtpCode}
             maxLength={6}
             setIsFlipped={setIsFlipped}
-
             validation={(v) => validateOTPCode(v, isOtpValid)}
             isFlipped={false}
             allowedChars={/^[0-9 ]*$/}
@@ -508,35 +532,21 @@ function stopCresPolling() {
 
         {!isOtpValid && <Text style={{ color: theme.errorColor || 'red' }}>{t('errors.otpNotValid')}</Text>}
 
-
-        {/* Botón */}
         <Pressable
           style={[
             styles.button,
-
             { backgroundColor: theme.buttonColor || '#000' },
-            (!isFormValid  && styles.disabledButton) || (isLoading && styles.disabledButton) ,
+            (!isFormValid && styles.disabledButton) || (isLoading && styles.disabledButton)
           ]}
-          onPress={handlePressButton}
-          // onPress={()=>{handleAddCardPress()}}
+          onPress={handlePress}
           disabled={!isFormValid || isLoading}
         >
-          <Text
-            style={{
-              color: theme.buttonTextColor || '#fff',
-              textAlign: 'center',
-            }}
-          >
+          <Text style={{ color: theme.buttonTextColor || '#fff', textAlign: 'center' }}>
             {verifyByOtp ? 'Verify Code' : 'Add Card'}
           </Text>
         </Pressable>
-        <Button title='Show Modal' onPress={() => {
-          setChallengeHtml(`<!DOCTYPE html SYSTEM 'about:legacy-compat'><html class='no-js' lang='en'xmlns='http://www.w3.org/1999/xhtml'><head><meta http-equiv='Content-Type' content='text/html; charset=utf-8'/><meta charset='utf-8'/></head><body OnLoad='OnLoadEvent();'><form action='https://ccapi-stg.paymentez.com/v2/3ds/mockchallenge' method='POST' id='threeD' name='threeD'>message_id: <input type='area' id='message_id' name='message_id' value='AU-106430' />;creq: <input type='area' id='creq'name='creq' value='ewogICAiYWNzVHJhbnNJRCIgOiAiMjZjZGI3ZjAtOTE0My00M2I0LTlhM2YtYWUwZWE1MzUyMzhjIiwKICA' />; \"term_url: <input type='area' id='term_url' name='term_url' value='https://lantechco.ec/img/callback3DS.php' />;\n            <input type='submit' value='proceed to issuer'></form><script language='Javascript'>document.getElementById('threeD').submit(); </script></body></body></html>`)
-          setValidateBy3ds(true);
-        }} />
       </ScrollView>
     </KeyboardAvoidingView>
-
   );
 };
 
@@ -548,44 +558,22 @@ const styles = StyleSheet.create({
     backgroundColor: 'white',
     borderRadius: 10,
     padding: 40,
-    width: Dimensions.get('window').width * 0.9, // 90% del ancho de la pantalla
-    height: Dimensions.get('window').height * 0.7, // 70% del alto de la pantalla
+    width: Dimensions.get('window').width * 0.9,
+    height: Dimensions.get('window').height * 0.7,
     alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.25,
     shadowRadius: 4,
-    elevation: 5,
+    elevation: 5
   },
-  webView: {
-    justifyContent: 'center',
-    // flex:1,
-    marginTop: 60,
-    borderRadius: 20,
-    padding: 20,
-    marginBottom: 20,
-  },
+  webView: { justifyContent: 'center', marginTop: 60, borderRadius: 20, padding: 20, marginBottom: 20 },
   centeredView: {
     flex: 1,
-    justifyContent: 'center', // Centra verticalmente
-    alignItems: 'center', // Centra horizontalmente
-    backgroundColor: 'rgba(0, 0, 0, 0.5)', // Fondo semitransparente
-  },
-  buttonClose: {
-    backgroundColor: '#2196F3',
-  },
-  textStyle: {
-    color: 'white',
-    fontWeight: 'bold',
-    textAlign: 'center',
-  },
-  modalText: {
-    marginBottom: 15,
-    textAlign: 'center',
-  },
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)'
+  }
 });
 
 export default PaymentGatewayForm;

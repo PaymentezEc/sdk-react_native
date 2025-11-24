@@ -82,9 +82,13 @@ export interface BillingAddress {
 export interface AddCardResponse {
   card: CardResponse;
   "3ds": The3Ds;
+  transaction: TransactionInfo
 }
 
 
+export interface TransactionInfo{
+  status_detail?: number
+}
 
 export interface The3Ds {
   authentication:   Authentication;

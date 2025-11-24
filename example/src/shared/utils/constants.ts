@@ -13,6 +13,9 @@ export const NUVEI_ENV = {
   SERVER_KEY: 'NXaK6ukvqwaPshOtFfJAhN9dkPnloR',
 
 
+  // CLIENT_ID : 'viamaticatest-sdk',
+  // CLIENT_SECRET: '2Fe2BeQh6QsBMP9lmdmUfeAvL5fkMuGq',
+
   CLIENT_ID : 'viamaticatest-sdk',
   CLIENT_SECRET: '2Fe2BeQh6QsBMP9lmdmUfeAvL5fkMuGq',
 };
